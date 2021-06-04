@@ -3,6 +3,10 @@ package zig
 import (
 	"fmt"
 	"hash/crc32"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
 	"sync"
 	"unsafe"
 
@@ -22,6 +26,13 @@ type blockType int
 const (
 	blockTypeHeading blockType = iota
 	blockTypeText
+)
+
+type fontType int
+
+const (
+	fontTypeNarrow fontType = iota
+	fontTypeWide
 )
 
 var (
@@ -70,23 +81,28 @@ func formatError(code C.EB_Error_Code) string {
 	return C.GoString(C.eb_error_string(code))
 }
 
-type BookEntry struct {
+type Gaiji struct {
+	Symbol int
+	Glyph  []byte
+}
+
+type Entry struct {
 	Heading string
 	Text    string
 }
 
-type BookSubbook struct {
+type Subbook struct {
 	Title       string
 	Copyright   string
-	Entries     []BookEntry
-	GaijiWide   []int
-	GaijiNarrow []int
+	Entries     []Entry
+	GaijiWide   []Gaiji
+	GaijiNarrow []Gaiji
 }
 
 type Book struct {
 	DiscCode string
 	CharCode string
-	Subbooks []BookSubbook
+	Subbooks []Subbook
 }
 
 type bookContext struct {
@@ -203,7 +219,7 @@ func (bc *bookContext) loadDiscCode() (string, error) {
 	}
 }
 
-func (bc *bookContext) loadSubbooks() ([]BookSubbook, error) {
+func (bc *bookContext) loadSubbooks() ([]Subbook, error) {
 	var (
 		subbookCodes [C.EB_MAX_SUBBOOKS]C.EB_Subbook_Code
 		subbookCount C.int
@@ -213,7 +229,7 @@ func (bc *bookContext) loadSubbooks() ([]BookSubbook, error) {
 		return nil, fmt.Errorf("eb_subbook_list failed with code: %s", formatError(errEb))
 	}
 
-	var subbooks []BookSubbook
+	var subbooks []Subbook
 	for i := 0; i < int(subbookCount); i++ {
 		subbook, err := bc.loadSubbook(subbookCodes[i])
 		if err != nil {
@@ -226,13 +242,51 @@ func (bc *bookContext) loadSubbooks() ([]BookSubbook, error) {
 	return subbooks, nil
 }
 
-func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*BookSubbook, error) {
+func (bc *bookContext) loadGaiji(gaiji, size int, font fontType) (image.Image, error) {
+	bitmap := make([]C.char, size*size/8)
+	switch font {
+	case fontTypeWide:
+		if errEb := C.eb_wide_font_character_bitmap(bc.book, C.int(gaiji), &bitmap[0]); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		}
+	case fontTypeNarrow:
+		if errEb := C.eb_narrow_font_character_bitmap(bc.book, C.int(gaiji), &bitmap[0]); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		}
+	}
+
+	glyph := image.NewRGBA(image.Rect(0, 0, size, size))
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			var (
+				byteOffset = y*size/8 + x/8
+				bitOffset  = 7 - x%8
+			)
+
+			if b := byte(bitmap[byteOffset]); b&(1<<bitOffset) != 0 {
+				glyph.Set(x, y, color.RGBA{0x00, 0x00, 0x00, 0xff})
+			}
+		}
+	}
+
+	return glyph, nil
+}
+
+func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, error) {
 	if errEb := C.eb_set_subbook(bc.book, subbookCode); errEb != C.EB_SUCCESS {
 		return nil, fmt.Errorf("eb_set_subbook failed with code: %s", formatError(errEb))
 	}
 
+	query := &queryContext{
+		blocksSeen:  make(map[uint32]bool),
+		gaijiWide:   make(map[int]bool),
+		gaijiNarrow: make(map[int]bool),
+	}
+
+	setActiveQuery(query)
+
 	var (
-		subbook BookSubbook
+		subbook Subbook
 		err     error
 	)
 
@@ -244,58 +298,59 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*BookSubbook,
 		return nil, err
 	}
 
-	{
-		query := &queryContext{
-			blocksSeen:  make(map[uint32]bool),
-			gaijiWide:   make(map[int]bool),
-			gaijiNarrow: make(map[int]bool),
+	if errEb := C.eb_search_all_alphabet(bc.book); errEb == C.EB_SUCCESS {
+		entries, err := bc.loadEntries(query)
+		if err != nil {
+			return nil, err
 		}
 
-		setActiveQuery(query)
+		subbook.Entries = append(subbook.Entries, entries...)
+	}
 
-		if errEb := C.eb_search_all_alphabet(bc.book); errEb == C.EB_SUCCESS {
-			entries, err := bc.loadEntries(query)
-			if err != nil {
-				return nil, err
-			}
-
-			subbook.Entries = append(subbook.Entries, entries...)
+	if errEb := C.eb_search_all_kana(bc.book); errEb == C.EB_SUCCESS {
+		entries, err := bc.loadEntries(query)
+		if err != nil {
+			return nil, err
 		}
 
-		if errEb := C.eb_search_all_kana(bc.book); errEb == C.EB_SUCCESS {
-			entries, err := bc.loadEntries(query)
-			if err != nil {
-				return nil, err
-			}
+		subbook.Entries = append(subbook.Entries, entries...)
+	}
 
-			subbook.Entries = append(subbook.Entries, entries...)
+	if errEb := C.eb_search_all_asis(bc.book); errEb == C.EB_SUCCESS {
+		entries, err := bc.loadEntries(query)
+		if err != nil {
+			return nil, err
 		}
 
-		if errEb := C.eb_search_all_asis(bc.book); errEb == C.EB_SUCCESS {
-			entries, err := bc.loadEntries(query)
-			if err != nil {
-				return nil, err
-			}
+		subbook.Entries = append(subbook.Entries, entries...)
+	}
 
-			subbook.Entries = append(subbook.Entries, entries...)
+	clearActiveQuery()
+
+	if errEb := C.eb_set_font(bc.book, C.EB_FONT_48); errEb != C.EB_SUCCESS {
+		return nil, fmt.Errorf("eb_set_font failed with code: %s", formatError(errEb))
+	}
+
+	for gaiji := range query.gaijiWide {
+		glyph, err := bc.loadGaiji(gaiji, 48, fontTypeWide)
+		if err != nil {
+			return nil, err
 		}
 
-		clearActiveQuery()
-
-		for gaiji := range query.gaijiWide {
-			subbook.GaijiWide = append(subbook.GaijiWide, gaiji)
+		fp, err := os.Create(fmt.Sprintf("/home/alex/test/%d.png", gaiji))
+		if err != nil {
+			return nil, err
 		}
 
-		for gaiji := range query.gaijiNarrow {
-			subbook.GaijiNarrow = append(subbook.GaijiNarrow, gaiji)
-		}
+		png.Encode(fp, glyph)
+		fp.Close()
 	}
 
 	return &subbook, nil
 }
 
-func (bc *bookContext) loadEntries(query *queryContext) ([]BookEntry, error) {
-	var entries []BookEntry
+func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
+	var entries []Entry
 
 	for {
 		var (
@@ -303,13 +358,13 @@ func (bc *bookContext) loadEntries(query *queryContext) ([]BookEntry, error) {
 			hitCount C.int
 		)
 
-		if errEb := C.eb_hit_list(bc.book, (C.int)(len(hits)), &hits[0], &hitCount); errEb != C.EB_SUCCESS {
+		if errEb := C.eb_hit_list(bc.book, C.int(len(hits)), &hits[0], &hitCount); errEb != C.EB_SUCCESS {
 			return nil, fmt.Errorf("eb_hit_list failed with code: %s", formatError(errEb))
 		}
 
 		for _, hit := range hits[:hitCount] {
 			var (
-				entry BookEntry
+				entry Entry
 				err   error
 			)
 
