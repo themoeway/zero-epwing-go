@@ -28,12 +28,24 @@ type Book struct {
 	Subbooks []Subbook `json:"subbooks"`
 }
 
-func outputBook(bookSrc *zig.Book, path string, pretty bool) error {
-	bookDst := Book{DiscCode: bookSrc.DiscCode, CharCode: bookSrc.CharCode}
+func outputEntries(bookSrc *zig.Book, path string, pretty bool) error {
+	bookDst := Book{
+		DiscCode: bookSrc.DiscCode,
+		CharCode: bookSrc.CharCode,
+	}
+
 	for _, subbookSrc := range bookSrc.Subbooks {
-		subbookDst := Subbook{Title: subbookSrc.Title, Copyright: subbookSrc.Copyright}
+		subbookDst := Subbook{
+			Title:     subbookSrc.Title,
+			Copyright: subbookSrc.Copyright,
+		}
+
 		for _, entrySrc := range subbookSrc.Entries {
-			entryDst := Entry{entrySrc.Heading, entrySrc.Text}
+			entryDst := Entry{
+				Heading: entrySrc.Heading,
+				Text:    entrySrc.Text,
+			}
+
 			subbookDst.Entries = append(subbookDst.Entries, entryDst)
 		}
 
@@ -58,8 +70,13 @@ func outputBook(bookSrc *zig.Book, path string, pretty bool) error {
 	return ioutil.WriteFile(path, data, 0644)
 }
 
+func outputGlyphs(bookSrc *zig.Book, dir string) error {
+	return nil
+}
+
 func main() {
 	var (
+		glyphsPath    = flag.String("glyphs-path", "", "output path for gaiji glyphs")
 		entriesPath   = flag.String("entries-path", "", "output path for dictionary entries")
 		entriesPretty = flag.Bool("entries-pretty", false, "pretty-print dictionary entries")
 	)
@@ -83,7 +100,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if err := outputBook(book, *entriesPath, *entriesPretty); err != nil {
-		log.Fatal(err)
+	if len(*entriesPath) > 0 {
+		if err := outputEntries(book, *entriesPath, *entriesPretty); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	if len(*glyphsPath) > 0 {
+		if err := outputGlyphs(book, *glyphsPath); err != nil {
+			log.Fatal(err)
+		}
 	}
 }
