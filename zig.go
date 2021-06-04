@@ -5,8 +5,6 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
-	"image/png"
-	"os"
 	"sync"
 	"unsafe"
 
@@ -35,6 +33,17 @@ const (
 	fontTypeWide
 )
 
+type LoadFlags int
+
+const (
+	LoadFlagsNone LoadFlags = 0
+
+	LoadFlagsGaiji16 = 1 << iota
+	LoadFlagGaiji24
+	LoadFlagGaiji30
+	LoadFlagGaiji48
+)
+
 var (
 	activeQuery     *queryContext
 	activeQueryLock sync.Mutex
@@ -51,9 +60,9 @@ func clearActiveQuery() {
 }
 
 type queryContext struct {
-	blocksSeen  map[uint32]bool
-	gaijiWide   map[int]bool
-	gaijiNarrow map[int]bool
+	blocksSeen       map[uint32]bool
+	codepointsWide   map[int]bool
+	codepointsNarrow map[int]bool
 }
 
 //export hookCallback
@@ -61,10 +70,10 @@ func hookCallback(book *C.EB_Book, appendix *C.EB_Appendix, container *C.void, h
 	var marker string
 	switch hookCode {
 	case C.EB_HOOK_NARROW_FONT:
-		activeQuery.gaijiNarrow[int(*argv)] = true
+		activeQuery.codepointsNarrow[int(*argv)] = true
 		marker = fmt.Sprintf("{{n_%d}}", *argv)
 	case C.EB_HOOK_WIDE_FONT:
-		activeQuery.gaijiWide[int(*argv)] = true
+		activeQuery.codepointsWide[int(*argv)] = true
 		marker = fmt.Sprintf("{{w_%d}}", *argv)
 	}
 
@@ -82,8 +91,10 @@ func formatError(code C.EB_Error_Code) string {
 }
 
 type Gaiji struct {
-	Symbol int
-	Glyph  []byte
+	Glyph16 image.Image
+	Glyph24 image.Image
+	Glyph30 image.Image
+	Glyph48 image.Image
 }
 
 type Entry struct {
@@ -95,8 +106,8 @@ type Subbook struct {
 	Title       string
 	Copyright   string
 	Entries     []Entry
-	GaijiWide   []Gaiji
-	GaijiNarrow []Gaiji
+	GaijiWide   map[int]Gaiji
+	GaijiNarrow map[int]Gaiji
 }
 
 type Book struct {
@@ -110,35 +121,36 @@ type bookContext struct {
 	decoder *encoding.Decoder
 	hookset *C.EB_Hookset
 	book    *C.EB_Book
+	flags   LoadFlags
 }
 
-func (c *bookContext) initialize() error {
+func (bc *bookContext) initialize() error {
 	if errEb := C.eb_initialize_library(); errEb != C.EB_SUCCESS {
 		return fmt.Errorf("eb_initialize_library failed with code: %s", formatError(errEb))
 	}
 
-	c.book = (*C.EB_Book)(C.calloc(1, C.size_t(unsafe.Sizeof(C.EB_Book{}))))
-	C.eb_initialize_book(c.book)
+	bc.book = (*C.EB_Book)(C.calloc(1, C.size_t(unsafe.Sizeof(C.EB_Book{}))))
+	C.eb_initialize_book(bc.book)
 
-	c.hookset = (*C.EB_Hookset)(C.calloc(1, C.size_t(unsafe.Sizeof(C.EB_Hookset{}))))
-	C.eb_initialize_hookset(c.hookset)
+	bc.hookset = (*C.EB_Hookset)(C.calloc(1, C.size_t(unsafe.Sizeof(C.EB_Hookset{}))))
+	C.eb_initialize_hookset(bc.hookset)
 
-	if err := c.installHooks(); err != nil {
+	if err := bc.installHooks(); err != nil {
 		return err
 	}
 
-	c.buffer = make([]byte, 22)
-	c.decoder = japanese.EUCJP.NewDecoder()
+	bc.buffer = make([]byte, 22)
+	bc.decoder = japanese.EUCJP.NewDecoder()
 
 	return nil
 }
 
-func (c *bookContext) shutdown() {
-	C.eb_finalize_hookset(c.hookset)
-	C.free(unsafe.Pointer(c.hookset))
+func (bc *bookContext) shutdown() {
+	C.eb_finalize_hookset(bc.hookset)
+	C.free(unsafe.Pointer(bc.hookset))
 
-	C.eb_finalize_book(c.book)
-	C.free(unsafe.Pointer(c.book))
+	C.eb_finalize_book(bc.book)
+	C.free(unsafe.Pointer(bc.book))
 
 	C.eb_finalize_library()
 }
@@ -242,53 +254,24 @@ func (bc *bookContext) loadSubbooks() ([]Subbook, error) {
 	return subbooks, nil
 }
 
-func (bc *bookContext) loadGaiji(gaiji, size int, font fontType) (image.Image, error) {
-	bitmap := make([]C.char, size*size/8)
-	switch font {
-	case fontTypeWide:
-		if errEb := C.eb_wide_font_character_bitmap(bc.book, C.int(gaiji), &bitmap[0]); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
-		}
-	case fontTypeNarrow:
-		if errEb := C.eb_narrow_font_character_bitmap(bc.book, C.int(gaiji), &bitmap[0]); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
-		}
-	}
-
-	glyph := image.NewRGBA(image.Rect(0, 0, size, size))
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			var (
-				byteOffset = y*size/8 + x/8
-				bitOffset  = 7 - x%8
-			)
-
-			if b := byte(bitmap[byteOffset]); b&(1<<bitOffset) != 0 {
-				glyph.Set(x, y, color.RGBA{0x00, 0x00, 0x00, 0xff})
-			}
-		}
-	}
-
-	return glyph, nil
-}
-
 func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, error) {
 	if errEb := C.eb_set_subbook(bc.book, subbookCode); errEb != C.EB_SUCCESS {
 		return nil, fmt.Errorf("eb_set_subbook failed with code: %s", formatError(errEb))
 	}
 
 	query := &queryContext{
-		blocksSeen:  make(map[uint32]bool),
-		gaijiWide:   make(map[int]bool),
-		gaijiNarrow: make(map[int]bool),
+		blocksSeen:       make(map[uint32]bool),
+		codepointsWide:   make(map[int]bool),
+		codepointsNarrow: make(map[int]bool),
 	}
 
 	setActiveQuery(query)
 
-	var (
-		subbook Subbook
-		err     error
-	)
+	var err error
+	subbook := Subbook{
+		GaijiWide:   make(map[int]Gaiji),
+		GaijiNarrow: make(map[int]Gaiji),
+	}
 
 	if subbook.Title, err = bc.loadTitle(); err != nil {
 		return nil, err
@@ -327,23 +310,79 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 
 	clearActiveQuery()
 
-	if errEb := C.eb_set_font(bc.book, C.EB_FONT_48); errEb != C.EB_SUCCESS {
-		return nil, fmt.Errorf("eb_set_font failed with code: %s", formatError(errEb))
+	var fonts []C.int
+	if bc.flags&LoadFlagsGaiji16 != 0 {
+		fonts = append(fonts, C.EB_FONT_16)
+	}
+	if bc.flags&LoadFlagGaiji24 != 0 {
+		fonts = append(fonts, C.EB_FONT_24)
+	}
+	if bc.flags&LoadFlagGaiji30 != 0 {
+		fonts = append(fonts, C.EB_FONT_30)
+	}
+	if bc.flags&LoadFlagGaiji48 != 0 {
+		fonts = append(fonts, C.EB_FONT_48)
 	}
 
-	for gaiji := range query.gaijiWide {
-		glyph, err := bc.loadGaiji(gaiji, 48, fontTypeWide)
-		if err != nil {
-			return nil, err
+	setGaiji := func(codepoint int, glyph image.Image, font fontType) {
+		var mapping map[int]Gaiji
+		switch font {
+		case fontTypeNarrow:
+			mapping = subbook.GaijiNarrow
+		case fontTypeWide:
+			mapping = subbook.GaijiWide
 		}
 
-		fp, err := os.Create(fmt.Sprintf("/home/alex/test/%d.png", gaiji))
-		if err != nil {
-			return nil, err
+		gaiji, _ := mapping[codepoint]
+
+		switch glyph.Bounds().Dx() {
+		case 16:
+			gaiji.Glyph16 = glyph
+		case 24:
+			gaiji.Glyph24 = glyph
+		case 30:
+			gaiji.Glyph30 = glyph
+		case 48:
+			gaiji.Glyph48 = glyph
 		}
 
-		png.Encode(fp, glyph)
-		fp.Close()
+		mapping[codepoint] = gaiji
+	}
+
+	for _, font := range fonts {
+		if errEb := C.eb_set_font(bc.book, font); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_set_font failed with code: %s", formatError(errEb))
+		}
+
+		var fontSize int
+		switch font {
+		case C.EB_FONT_16:
+			fontSize = 16
+		case C.EB_FONT_24:
+			fontSize = 24
+		case C.EB_FONT_30:
+			fontSize = 30
+		case C.EB_FONT_48:
+			fontSize = 48
+		}
+
+		for codepoint := range query.codepointsWide {
+			glyph, err := bc.blitCodepoint(codepoint, fontSize, fontTypeWide)
+			if err != nil {
+				return nil, err
+			}
+
+			setGaiji(codepoint, glyph, fontTypeWide)
+		}
+
+		for codepoint := range query.codepointsNarrow {
+			glyph, err := bc.blitCodepoint(codepoint, fontSize, fontTypeNarrow)
+			if err != nil {
+				return nil, err
+			}
+
+			setGaiji(codepoint, glyph, fontTypeNarrow)
+		}
 	}
 
 	return &subbook, nil
@@ -391,6 +430,40 @@ func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
 			return entries, nil
 		}
 	}
+}
+
+func (bc *bookContext) blitCodepoint(codepoint, size int, font fontType) (image.Image, error) {
+	bitmap := make([]C.char, size*size/8)
+
+	switch font {
+	case fontTypeWide:
+		if errEb := C.eb_wide_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0]); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		}
+	case fontTypeNarrow:
+		if errEb := C.eb_narrow_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0]); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		}
+	}
+
+	glyph := image.NewGray(image.Rect(0, 0, size, size))
+
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			var (
+				byteOffset = y*size/8 + x/8
+				bitOffset  = 7 - x%8
+			)
+
+			if b := byte(bitmap[byteOffset]); b&(1<<bitOffset) == 0 {
+				glyph.Set(x, y, color.Gray{0xff})
+			} else {
+				glyph.Set(x, y, color.Gray{0x00})
+			}
+		}
+	}
+
+	return glyph, nil
 }
 
 func (bc *bookContext) loadTitle() (string, error) {
@@ -448,8 +521,8 @@ func (bc *bookContext) loadContent(position C.EB_Position, blockType blockType) 
 	}
 }
 
-func Load(path string) (*Book, error) {
-	var bc bookContext
+func Load(path string, flags LoadFlags) (*Book, error) {
+	bc := bookContext{flags: flags}
 	if err := bc.initialize(); err != nil {
 		return nil, err
 	}

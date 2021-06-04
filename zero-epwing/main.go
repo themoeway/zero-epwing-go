@@ -95,7 +95,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	book, err := zig.Load(args[0])
+	book, err := zig.Load(args[0], zig.LoadFlagGaiji48)
 	if err != nil {
 		log.Fatal(err)
 	}
