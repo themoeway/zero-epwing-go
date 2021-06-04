@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"image"
+	"image/png"
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 
 	zig "github.com/FooSoft/zero-epwing-go"
 )
@@ -70,13 +73,72 @@ func outputEntries(bookSrc *zig.Book, path string, pretty bool) error {
 	return ioutil.WriteFile(path, data, 0644)
 }
 
-func outputGlyphs(bookSrc *zig.Book, dir string) error {
+func outputGaiji(bookSrc *zig.Book, gaiji16Dir, gaiji24Dir, gaiji30Dir, gaiji48Dir string) error {
+	for subbookIndex, subbook := range bookSrc.Subbooks {
+		outputGaijiSet := func(gaijiType string, mapping map[int]zig.Gaiji) error {
+			for codepoint, gaiji := range mapping {
+				outputGaijiSingle := func(gaijiDir string, size int) error {
+					if len(gaijiDir) == 0 {
+						return nil
+					}
+
+					fp, err := os.Create(path.Join(gaijiDir, fmt.Sprintf("%d_%d_%s_%d.png", subbookIndex, codepoint, gaijiType, size)))
+					if err != nil {
+						return err
+					}
+
+					defer fp.Close()
+
+					var glyph image.Image
+					switch size {
+					case 16:
+						glyph = gaiji.Glyph16
+					case 24:
+						glyph = gaiji.Glyph24
+					case 30:
+						glyph = gaiji.Glyph30
+					case 48:
+						glyph = gaiji.Glyph48
+					}
+
+					return png.Encode(fp, glyph)
+				}
+
+				if err := outputGaijiSingle(gaiji16Dir, 16); err != nil {
+					return err
+				}
+				if err := outputGaijiSingle(gaiji24Dir, 24); err != nil {
+					return err
+				}
+				if err := outputGaijiSingle(gaiji30Dir, 30); err != nil {
+					return err
+				}
+				if err := outputGaijiSingle(gaiji48Dir, 48); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		}
+
+		if err := outputGaijiSet("n", subbook.GaijiNarrow); err != nil {
+			return err
+		}
+
+		if err := outputGaijiSet("w", subbook.GaijiWide); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
 func main() {
 	var (
-		glyphsPath    = flag.String("glyphs-path", "", "output path for gaiji glyphs")
+		gaiji16Dir    = flag.String("gaiji16-dir", "", "output directory for gaiji glyphs (size 16)")
+		gaiji24Dir    = flag.String("gaiji24-dir", "", "output directory for gaiji glyphs (size 24)")
+		gaiji30Dir    = flag.String("gaiji30-dir", "", "output directory for gaiji glyphs (size 30)")
+		gaiji48Dir    = flag.String("gaiji48-dir", "", "output directory for gaiji glyphs (size 48)")
 		entriesPath   = flag.String("entries-path", "", "output path for dictionary entries")
 		entriesPretty = flag.Bool("entries-pretty", false, "pretty-print dictionary entries")
 	)
@@ -95,7 +157,21 @@ func main() {
 		os.Exit(2)
 	}
 
-	book, err := zig.Load(args[0], zig.LoadFlagGaiji48)
+	var flags zig.LoadFlags
+	if len(*gaiji16Dir) > 0 {
+		flags |= zig.LoadFlagsGaiji16
+	}
+	if len(*gaiji24Dir) > 0 {
+		flags |= zig.LoadFlagsGaiji24
+	}
+	if len(*gaiji30Dir) > 0 {
+		flags |= zig.LoadFlagsGaiji30
+	}
+	if len(*gaiji48Dir) > 0 {
+		flags |= zig.LoadFlagsGaiji48
+	}
+
+	book, err := zig.Load(args[0], flags)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -106,9 +182,7 @@ func main() {
 		}
 	}
 
-	if len(*glyphsPath) > 0 {
-		if err := outputGlyphs(book, *glyphsPath); err != nil {
-			log.Fatal(err)
-		}
+	if err := outputGaiji(book, *gaiji16Dir, *gaiji24Dir, *gaiji30Dir, *gaiji48Dir); err != nil {
+		log.Fatal(err)
 	}
 }

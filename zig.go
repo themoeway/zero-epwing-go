@@ -39,9 +39,9 @@ const (
 	LoadFlagsNone LoadFlags = 0
 
 	LoadFlagsGaiji16 = 1 << iota
-	LoadFlagGaiji24
-	LoadFlagGaiji30
-	LoadFlagGaiji48
+	LoadFlagsGaiji24
+	LoadFlagsGaiji30
+	LoadFlagsGaiji48
 )
 
 var (
@@ -314,13 +314,13 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	if bc.flags&LoadFlagsGaiji16 != 0 {
 		fonts = append(fonts, C.EB_FONT_16)
 	}
-	if bc.flags&LoadFlagGaiji24 != 0 {
+	if bc.flags&LoadFlagsGaiji24 != 0 {
 		fonts = append(fonts, C.EB_FONT_24)
 	}
-	if bc.flags&LoadFlagGaiji30 != 0 {
+	if bc.flags&LoadFlagsGaiji30 != 0 {
 		fonts = append(fonts, C.EB_FONT_30)
 	}
-	if bc.flags&LoadFlagGaiji48 != 0 {
+	if bc.flags&LoadFlagsGaiji48 != 0 {
 		fonts = append(fonts, C.EB_FONT_48)
 	}
 
@@ -367,7 +367,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 		}
 
 		for codepoint := range query.codepointsWide {
-			glyph, err := bc.blitCodepoint(codepoint, fontSize, fontTypeWide)
+			glyph, err := bc.blitGaiji(codepoint, fontSize, fontTypeWide)
 			if err != nil {
 				return nil, err
 			}
@@ -376,7 +376,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 		}
 
 		for codepoint := range query.codepointsNarrow {
-			glyph, err := bc.blitCodepoint(codepoint, fontSize, fontTypeNarrow)
+			glyph, err := bc.blitGaiji(codepoint, fontSize, fontTypeNarrow)
 			if err != nil {
 				return nil, err
 			}
@@ -432,7 +432,7 @@ func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
 	}
 }
 
-func (bc *bookContext) blitCodepoint(codepoint, size int, font fontType) (image.Image, error) {
+func (bc *bookContext) blitGaiji(codepoint, size int, font fontType) (image.Image, error) {
 	bitmap := make([]C.char, size*size/8)
 
 	switch font {
