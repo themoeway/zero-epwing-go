@@ -123,10 +123,13 @@ func outputGaiji(bookSrc *zig.Book, gaiji16Dir, gaiji24Dir, gaiji30Dir, gaiji48D
 
 func main() {
 	var (
-		gaiji16Dir    = flag.String("gaiji16-dir", "", "output directory for gaiji glyphs (size 16)")
-		gaiji24Dir    = flag.String("gaiji24-dir", "", "output directory for gaiji glyphs (size 24)")
-		gaiji30Dir    = flag.String("gaiji30-dir", "", "output directory for gaiji glyphs (size 30)")
-		gaiji48Dir    = flag.String("gaiji48-dir", "", "output directory for gaiji glyphs (size 48)")
+		stubGaiji = flag.Bool("stub-gaiji", false, "add text stubs for narrow and wide gaiji")
+
+		gaiji16Dir = flag.String("gaiji16-dir", "", "output directory for gaiji glyphs (size 16)")
+		gaiji24Dir = flag.String("gaiji24-dir", "", "output directory for gaiji glyphs (size 24)")
+		gaiji30Dir = flag.String("gaiji30-dir", "", "output directory for gaiji glyphs (size 30)")
+		gaiji48Dir = flag.String("gaiji48-dir", "", "output directory for gaiji glyphs (size 48)")
+
 		entriesPath   = flag.String("entries-path", "", "output path for dictionary entries")
 		entriesPretty = flag.Bool("entries-pretty", false, "pretty-print dictionary entries")
 	)
@@ -146,6 +149,9 @@ func main() {
 	}
 
 	var flags zig.LoadFlags
+	if *stubGaiji {
+		flags |= zig.LoadFlagsStubGaiji
+	}
 	if len(*gaiji16Dir) > 0 {
 		flags |= zig.LoadFlagsGaiji16
 	}

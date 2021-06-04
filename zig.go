@@ -38,7 +38,9 @@ type LoadFlags int
 const (
 	LoadFlagsNone LoadFlags = 0
 
-	LoadFlagsGaiji16 = 1 << iota
+	LoadFlagsStubGaiji = 1 << iota
+
+	LoadFlagsGaiji16
 	LoadFlagsGaiji24
 	LoadFlagsGaiji30
 	LoadFlagsGaiji48
@@ -156,9 +158,9 @@ func (bc *bookContext) shutdown() {
 }
 
 func (bc *bookContext) installHooks() error {
-	hookCodes := []C.EB_Hook_Code{
-		C.EB_HOOK_NARROW_FONT,
-		C.EB_HOOK_WIDE_FONT,
+	var hookCodes []C.EB_Hook_Code
+	if bc.flags&LoadFlagsStubGaiji != 0 {
+		hookCodes = append(hookCodes, C.EB_HOOK_NARROW_FONT, C.EB_HOOK_WIDE_FONT)
 	}
 
 	for _, hookCode := range hookCodes {
@@ -324,18 +326,10 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 		fonts = append(fonts, C.EB_FONT_48)
 	}
 
-	setGaiji := func(codepoint int, glyph image.Image, font fontType) {
-		var mapping map[int]Gaiji
-		switch font {
-		case fontTypeNarrow:
-			mapping = subbook.GaijiNarrow
-		case fontTypeWide:
-			mapping = subbook.GaijiWide
-		}
-
+	setGaiji := func(codepoint int, glyph image.Image, mapping map[int]Gaiji) {
 		gaiji, _ := mapping[codepoint]
 
-		switch glyph.Bounds().Dx() {
+		switch glyph.Bounds().Dy() {
 		case 16:
 			gaiji.Glyph16 = glyph
 		case 24:
@@ -354,34 +348,37 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 			return nil, fmt.Errorf("eb_set_font failed with code: %s", formatError(errEb))
 		}
 
-		var fontSize int
-		switch font {
-		case C.EB_FONT_16:
-			fontSize = 16
-		case C.EB_FONT_24:
-			fontSize = 24
-		case C.EB_FONT_30:
-			fontSize = 30
-		case C.EB_FONT_48:
-			fontSize = 48
+		var widthWide C.int
+		if errEb := C.eb_wide_font_width(bc.book, &widthWide); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_wide_font_width failed with code: %s", formatError(errEb))
+		}
+
+		var widthNarrow C.int
+		if errEb := C.eb_narrow_font_width(bc.book, &widthNarrow); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_narrow_font_width failed with code: %s", formatError(errEb))
+		}
+
+		var height C.int
+		if errEb := C.eb_font_height(bc.book, &height); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_font_height failed with code: %s", formatError(errEb))
 		}
 
 		for codepoint := range query.codepointsWide {
-			glyph, err := bc.blitGaiji(codepoint, fontSize, fontTypeWide)
+			glyph, err := bc.blitGaiji(codepoint, int(widthWide), int(height), fontTypeWide)
 			if err != nil {
 				return nil, err
 			}
 
-			setGaiji(codepoint, glyph, fontTypeWide)
+			setGaiji(codepoint, glyph, subbook.GaijiWide)
 		}
 
 		for codepoint := range query.codepointsNarrow {
-			glyph, err := bc.blitGaiji(codepoint, fontSize, fontTypeNarrow)
+			glyph, err := bc.blitGaiji(codepoint, int(widthNarrow), int(height), fontTypeNarrow)
 			if err != nil {
 				return nil, err
 			}
 
-			setGaiji(codepoint, glyph, fontTypeNarrow)
+			setGaiji(codepoint, glyph, subbook.GaijiNarrow)
 		}
 	}
 
@@ -432,8 +429,8 @@ func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
 	}
 }
 
-func (bc *bookContext) blitGaiji(codepoint, size int, font fontType) (image.Image, error) {
-	bitmap := make([]C.char, size*size/8)
+func (bc *bookContext) blitGaiji(codepoint, width, height int, font fontType) (image.Image, error) {
+	bitmap := make([]C.char, width*height/8)
 
 	switch font {
 	case fontTypeWide:
@@ -446,12 +443,12 @@ func (bc *bookContext) blitGaiji(codepoint, size int, font fontType) (image.Imag
 		}
 	}
 
-	glyph := image.NewGray(image.Rect(0, 0, size, size))
+	glyph := image.NewGray(image.Rect(0, 0, width, height))
 
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
 			var (
-				byteOffset = y*size/8 + x/8
+				byteOffset = y*width/8 + x/8
 				bitOffset  = 7 - x%8
 			)
 
