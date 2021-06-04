@@ -47,24 +47,25 @@ const (
 )
 
 var (
-	activeQuery     *queryContext
-	activeQueryLock sync.Mutex
+	activeSubbookContext *subbookContext
+	activeSubbookLock    sync.Mutex
 )
 
-func setActiveQuery(query *queryContext) {
-	activeQueryLock.Lock()
-	activeQuery = query
+func setSubbookContext(sc *subbookContext) {
+	activeSubbookLock.Lock()
+	activeSubbookContext = sc
 }
 
-func clearActiveQuery() {
-	activeQuery = nil
-	activeQueryLock.Unlock()
+func clearSubbookContext() {
+	activeSubbookContext = nil
+	activeSubbookLock.Unlock()
 }
 
-type queryContext struct {
+type subbookContext struct {
 	blocksSeen       map[uint32]bool
 	codepointsWide   map[int]bool
 	codepointsNarrow map[int]bool
+	flags            LoadFlags
 }
 
 //export hookCallback
@@ -72,11 +73,15 @@ func hookCallback(book *C.EB_Book, appendix *C.EB_Appendix, container *C.void, h
 	var marker string
 	switch hookCode {
 	case C.EB_HOOK_NARROW_FONT:
-		activeQuery.codepointsNarrow[int(*argv)] = true
-		marker = fmt.Sprintf("{{n_%d}}", *argv)
+		activeSubbookContext.codepointsNarrow[int(*argv)] = true
+		if activeSubbookContext.flags&LoadFlagsStubGaiji != 0 {
+			marker = fmt.Sprintf("{{n_%d}}", *argv)
+		}
 	case C.EB_HOOK_WIDE_FONT:
-		activeQuery.codepointsWide[int(*argv)] = true
-		marker = fmt.Sprintf("{{w_%d}}", *argv)
+		activeSubbookContext.codepointsWide[int(*argv)] = true
+		if activeSubbookContext.flags&LoadFlagsStubGaiji != 0 {
+			marker = fmt.Sprintf("{{w_%d}}", *argv)
+		}
 	}
 
 	if len(marker) > 0 {
@@ -158,9 +163,9 @@ func (bc *bookContext) shutdown() {
 }
 
 func (bc *bookContext) installHooks() error {
-	var hookCodes []C.EB_Hook_Code
-	if bc.flags&LoadFlagsStubGaiji != 0 {
-		hookCodes = append(hookCodes, C.EB_HOOK_NARROW_FONT, C.EB_HOOK_WIDE_FONT)
+	hookCodes := []C.EB_Hook_Code{
+		C.EB_HOOK_NARROW_FONT,
+		C.EB_HOOK_WIDE_FONT,
 	}
 
 	for _, hookCode := range hookCodes {
@@ -261,13 +266,14 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 		return nil, fmt.Errorf("eb_set_subbook failed with code: %s", formatError(errEb))
 	}
 
-	query := &queryContext{
+	setSubbookContext(&subbookContext{
 		blocksSeen:       make(map[uint32]bool),
 		codepointsWide:   make(map[int]bool),
 		codepointsNarrow: make(map[int]bool),
-	}
+		flags:            bc.flags,
+	})
 
-	setActiveQuery(query)
+	defer clearSubbookContext()
 
 	var err error
 	subbook := Subbook{
@@ -284,7 +290,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	if errEb := C.eb_search_all_alphabet(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries(query)
+		entries, err := bc.loadEntries()
 		if err != nil {
 			return nil, err
 		}
@@ -293,7 +299,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	if errEb := C.eb_search_all_kana(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries(query)
+		entries, err := bc.loadEntries()
 		if err != nil {
 			return nil, err
 		}
@@ -302,15 +308,13 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	if errEb := C.eb_search_all_asis(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries(query)
+		entries, err := bc.loadEntries()
 		if err != nil {
 			return nil, err
 		}
 
 		subbook.Entries = append(subbook.Entries, entries...)
 	}
-
-	clearActiveQuery()
 
 	var fonts []C.int
 	if bc.flags&LoadFlagsGaiji16 != 0 {
@@ -363,7 +367,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 			return nil, fmt.Errorf("eb_font_height failed with code: %s", formatError(errEb))
 		}
 
-		for codepoint := range query.codepointsWide {
+		for codepoint := range activeSubbookContext.codepointsWide {
 			glyph, err := bc.blitGaiji(codepoint, int(widthWide), int(height), fontTypeWide)
 			if err != nil {
 				return nil, err
@@ -372,7 +376,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 			setGaiji(codepoint, glyph, subbook.GaijiWide)
 		}
 
-		for codepoint := range query.codepointsNarrow {
+		for codepoint := range activeSubbookContext.codepointsNarrow {
 			glyph, err := bc.blitGaiji(codepoint, int(widthNarrow), int(height), fontTypeNarrow)
 			if err != nil {
 				return nil, err
@@ -385,7 +389,7 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	return &subbook, nil
 }
 
-func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
+func (bc *bookContext) loadEntries() ([]Entry, error) {
 	var entries []Entry
 
 	for {
@@ -417,9 +421,9 @@ func (bc *bookContext) loadEntries(query *queryContext) ([]Entry, error) {
 			hasher.Write([]byte(entry.Text))
 
 			sum := hasher.Sum32()
-			if seen, _ := query.blocksSeen[sum]; !seen {
+			if seen, _ := activeSubbookContext.blocksSeen[sum]; !seen {
 				entries = append(entries, entry)
-				query.blocksSeen[sum] = true
+				activeSubbookContext.blocksSeen[sum] = true
 			}
 		}
 
