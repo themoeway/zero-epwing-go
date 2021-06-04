@@ -77,43 +77,31 @@ func outputGaiji(bookSrc *zig.Book, gaiji16Dir, gaiji24Dir, gaiji30Dir, gaiji48D
 	for subbookIndex, subbook := range bookSrc.Subbooks {
 		outputGaijiSet := func(gaijiType string, mapping map[int]zig.Gaiji) error {
 			for codepoint, gaiji := range mapping {
-				outputGaijiSingle := func(gaijiDir string, size int) error {
+				outputGaijiSingle := func(gaijiDir string, gaijiGlyph image.Image) error {
 					if len(gaijiDir) == 0 {
 						return nil
 					}
 
-					fp, err := os.Create(path.Join(gaijiDir, fmt.Sprintf("%d_%d_%s_%d.png", subbookIndex, codepoint, gaijiType, size)))
+					gaijiPath := path.Join(gaijiDir, fmt.Sprintf("%d_%d_%s_%d.png", subbookIndex, codepoint, gaijiType, gaijiGlyph.Bounds().Dy()))
+					fp, err := os.Create(gaijiPath)
 					if err != nil {
 						return err
 					}
 
 					defer fp.Close()
-
-					var glyph image.Image
-					switch size {
-					case 16:
-						glyph = gaiji.Glyph16
-					case 24:
-						glyph = gaiji.Glyph24
-					case 30:
-						glyph = gaiji.Glyph30
-					case 48:
-						glyph = gaiji.Glyph48
-					}
-
-					return png.Encode(fp, glyph)
+					return png.Encode(fp, gaijiGlyph)
 				}
 
-				if err := outputGaijiSingle(gaiji16Dir, 16); err != nil {
+				if err := outputGaijiSingle(gaiji16Dir, gaiji.Glyph16); err != nil {
 					return err
 				}
-				if err := outputGaijiSingle(gaiji24Dir, 24); err != nil {
+				if err := outputGaijiSingle(gaiji24Dir, gaiji.Glyph24); err != nil {
 					return err
 				}
-				if err := outputGaijiSingle(gaiji30Dir, 30); err != nil {
+				if err := outputGaijiSingle(gaiji30Dir, gaiji.Glyph30); err != nil {
 					return err
 				}
-				if err := outputGaijiSingle(gaiji48Dir, 48); err != nil {
+				if err := outputGaijiSingle(gaiji48Dir, gaiji.Glyph48); err != nil {
 					return err
 				}
 			}
