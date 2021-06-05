@@ -2,7 +2,6 @@ package zig
 
 import (
 	"fmt"
-	"hash/crc32"
 	"image"
 	"image/color"
 	"sync"
@@ -62,7 +61,6 @@ func clearSubbookContext() {
 }
 
 type subbookContext struct {
-	blocksSeen       map[uint32]bool
 	codepointsWide   map[int]bool
 	codepointsNarrow map[int]bool
 	flags            LoadFlags
@@ -267,7 +265,6 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	setSubbookContext(&subbookContext{
-		blocksSeen:       make(map[uint32]bool),
 		codepointsWide:   make(map[int]bool),
 		codepointsNarrow: make(map[int]bool),
 		flags:            bc.flags,
@@ -289,31 +286,35 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 		return nil, err
 	}
 
-	if errEb := C.eb_search_all_alphabet(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries()
-		if err != nil {
-			return nil, err
-		}
-
-		subbook.Entries = append(subbook.Entries, entries...)
+	var position C.EB_Position
+	if errEb := C.eb_text(bc.book, &position); errEb != C.EB_SUCCESS {
+		return nil, fmt.Errorf("eb_text failed with code: %s", formatError(errEb))
 	}
 
-	if errEb := C.eb_search_all_kana(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries()
-		if err != nil {
+	for {
+		var entry Entry
+		if entry.Heading, err = bc.loadContent(position, blockTypeHeading); err != nil {
+			return nil, err
+		}
+		if entry.Text, err = bc.loadContent(position, blockTypeText); err != nil {
 			return nil, err
 		}
 
-		subbook.Entries = append(subbook.Entries, entries...)
-	}
+		subbook.Entries = append(subbook.Entries, entry)
 
-	if errEb := C.eb_search_all_asis(bc.book); errEb == C.EB_SUCCESS {
-		entries, err := bc.loadEntries()
-		if err != nil {
-			return nil, err
+		C.eb_seek_text(bc.book, &position)
+
+		if errEb := C.eb_forward_text(bc.book, nil); errEb != C.EB_SUCCESS {
+			if errEb == C.EB_ERR_END_OF_CONTENT {
+				break
+			} else {
+				return nil, fmt.Errorf("eb_forward_text failed with code: %s", formatError(errEb))
+			}
 		}
 
-		subbook.Entries = append(subbook.Entries, entries...)
+		if errEb := C.eb_tell_text(bc.book, &position); errEb != C.EB_SUCCESS {
+			return nil, fmt.Errorf("eb_tell_text failed with code: %s", formatError(errEb))
+		}
 	}
 
 	var fonts []C.int
@@ -387,50 +388,6 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	return &subbook, nil
-}
-
-func (bc *bookContext) loadEntries() ([]Entry, error) {
-	var entries []Entry
-
-	for {
-		var (
-			hits     [256]C.EB_Hit
-			hitCount C.int
-		)
-
-		if errEb := C.eb_hit_list(bc.book, C.int(len(hits)), &hits[0], &hitCount); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_hit_list failed with code: %s", formatError(errEb))
-		}
-
-		for _, hit := range hits[:hitCount] {
-			var (
-				entry Entry
-				err   error
-			)
-
-			if entry.Heading, err = bc.loadContent(hit.heading, blockTypeHeading); err != nil {
-				return nil, err
-			}
-
-			if entry.Text, err = bc.loadContent(hit.text, blockTypeText); err != nil {
-				return nil, err
-			}
-
-			hasher := crc32.NewIEEE()
-			hasher.Write([]byte(entry.Heading))
-			hasher.Write([]byte(entry.Text))
-
-			sum := hasher.Sum32()
-			if seen, _ := activeSubbookContext.blocksSeen[sum]; !seen {
-				entries = append(entries, entry)
-				activeSubbookContext.blocksSeen[sum] = true
-			}
-		}
-
-		if hitCount == 0 {
-			return entries, nil
-		}
-	}
 }
 
 func (bc *bookContext) blitGaiji(codepoint, width, height int, font fontType) (image.Image, error) {
@@ -510,8 +467,6 @@ func (bc *bookContext) loadContent(position C.EB_Position, blockType blockType) 
 			if errEb := C.eb_read_text(bc.book, nil, bc.hookset, nil, dataSize, data, &dataUsed); errEb != C.EB_SUCCESS {
 				return "", fmt.Errorf("eb_read_text failed with code: %s", formatError(errEb))
 			}
-		default:
-			panic("invalid block type")
 		}
 
 		if dataUsed+8 >= (C.ssize_t)(dataSize) {
