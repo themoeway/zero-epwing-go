@@ -91,8 +91,16 @@ func hookCallback(book *C.EB_Book, appendix *C.EB_Appendix, container *C.void, h
 	return C.EB_SUCCESS
 }
 
-func formatError(code C.EB_Error_Code) string {
+func formatEbError(code C.EB_Error_Code) string {
 	return C.GoString(C.eb_error_string(code))
+}
+
+func wrapEbError(function string, errEb C.EB_Error_Code) error {
+	if errEb != C.EB_SUCCESS {
+		return fmt.Errorf("%s failed with code: %s", function, formatEbError(errEb))
+	}
+
+	return nil
 }
 
 type Gaiji struct {
@@ -130,8 +138,8 @@ type bookContext struct {
 }
 
 func (bc *bookContext) initialize() error {
-	if errEb := C.eb_initialize_library(); errEb != C.EB_SUCCESS {
-		return fmt.Errorf("eb_initialize_library failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_initialize_library", C.eb_initialize_library()); err != nil {
+		return err
 	}
 
 	bc.book = (*C.EB_Book)(C.calloc(1, C.size_t(unsafe.Sizeof(C.EB_Book{}))))
@@ -167,8 +175,8 @@ func (bc *bookContext) installHooks() error {
 	}
 
 	for _, hookCode := range hookCodes {
-		if errEb := C.installHook(bc.hookset, hookCode); errEb != C.EB_SUCCESS {
-			return fmt.Errorf("eb_set_hook failed with code: %s", formatError(errEb))
+		if err := wrapEbError("installHook", C.installHook(bc.hookset, hookCode)); err != nil {
+			return err
 		}
 	}
 
@@ -178,8 +186,8 @@ func (bc *bookContext) installHooks() error {
 func (bc *bookContext) loadInternal(path string) (*Book, error) {
 	pathC := C.CString(path)
 	defer C.free(unsafe.Pointer(pathC))
-	if errEb := C.eb_bind(bc.book, pathC); errEb != C.EB_SUCCESS {
-		return nil, fmt.Errorf("eb_bind failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_bind", C.eb_bind(bc.book, pathC)); err != nil {
+		return nil, err
 	}
 
 	var (
@@ -204,8 +212,8 @@ func (bc *bookContext) loadInternal(path string) (*Book, error) {
 
 func (bc *bookContext) loadCharCode() (string, error) {
 	var charCode C.EB_Character_Code
-	if errEb := C.eb_character_code(bc.book, &charCode); errEb != C.EB_SUCCESS {
-		return "", fmt.Errorf("eb_character_code failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_character_code", C.eb_character_code(bc.book, &charCode)); err != nil {
+		return "", err
 	}
 
 	switch charCode {
@@ -222,8 +230,8 @@ func (bc *bookContext) loadCharCode() (string, error) {
 
 func (bc *bookContext) loadDiscCode() (string, error) {
 	var discCode C.EB_Disc_Code
-	if errEb := C.eb_disc_type(bc.book, &discCode); errEb != C.EB_SUCCESS {
-		return "", fmt.Errorf("eb_disc_type failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_disc_type", C.eb_disc_type(bc.book, &discCode)); err != nil {
+		return "", err
 	}
 
 	switch discCode {
@@ -242,8 +250,8 @@ func (bc *bookContext) loadSubbooks() ([]Subbook, error) {
 		subbookCount C.int
 	)
 
-	if errEb := C.eb_subbook_list(bc.book, &subbookCodes[0], &subbookCount); errEb != C.EB_SUCCESS {
-		return nil, fmt.Errorf("eb_subbook_list failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_subbook_list", C.eb_subbook_list(bc.book, &subbookCodes[0], &subbookCount)); err != nil {
+		return nil, err
 	}
 
 	var subbooks []Subbook
@@ -260,8 +268,8 @@ func (bc *bookContext) loadSubbooks() ([]Subbook, error) {
 }
 
 func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, error) {
-	if errEb := C.eb_set_subbook(bc.book, subbookCode); errEb != C.EB_SUCCESS {
-		return nil, fmt.Errorf("eb_set_subbook failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_set_subbook", C.eb_set_subbook(bc.book, subbookCode)); err != nil {
+		return nil, err
 	}
 
 	setSubbookContext(&subbookContext{
@@ -287,8 +295,8 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	var position C.EB_Position
-	if errEb := C.eb_text(bc.book, &position); errEb != C.EB_SUCCESS {
-		return nil, fmt.Errorf("eb_text failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_text", C.eb_text(bc.book, &position)); err != nil {
+		return nil, err
 	}
 
 	for {
@@ -308,12 +316,12 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 			if errEb == C.EB_ERR_END_OF_CONTENT {
 				break
 			} else {
-				return nil, fmt.Errorf("eb_forward_text failed with code: %s", formatError(errEb))
+				return nil, wrapEbError("eb_forward_text", errEb)
 			}
 		}
 
-		if errEb := C.eb_tell_text(bc.book, &position); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_tell_text failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_tell_text", C.eb_tell_text(bc.book, &position)); err != nil {
+			return nil, err
 		}
 	}
 
@@ -349,23 +357,23 @@ func (bc *bookContext) loadSubbook(subbookCode C.EB_Subbook_Code) (*Subbook, err
 	}
 
 	for _, font := range fonts {
-		if errEb := C.eb_set_font(bc.book, font); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_set_font failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_set_font", C.eb_set_font(bc.book, font)); err != nil {
+			return nil, err
 		}
 
 		var widthWide C.int
-		if errEb := C.eb_wide_font_width(bc.book, &widthWide); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_wide_font_width failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_wide_font_width", C.eb_wide_font_width(bc.book, &widthWide)); err != nil {
+			return nil, err
 		}
 
 		var widthNarrow C.int
-		if errEb := C.eb_narrow_font_width(bc.book, &widthNarrow); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_narrow_font_width failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_narrow_font_width", C.eb_narrow_font_width(bc.book, &widthNarrow)); err != nil {
+			return nil, err
 		}
 
 		var height C.int
-		if errEb := C.eb_font_height(bc.book, &height); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_font_height failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_font_height", C.eb_font_height(bc.book, &height)); err != nil {
+			return nil, err
 		}
 
 		for codepoint := range activeSubbookContext.codepointsWide {
@@ -395,12 +403,12 @@ func (bc *bookContext) blitGaiji(codepoint, width, height int, font fontType) (i
 
 	switch font {
 	case fontTypeWide:
-		if errEb := C.eb_wide_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0]); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_wide_font_character_bitmap", C.eb_wide_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0])); err != nil {
+			return nil, err
 		}
 	case fontTypeNarrow:
-		if errEb := C.eb_narrow_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0]); errEb != C.EB_SUCCESS {
-			return nil, fmt.Errorf("eb_wide_font_character_bitmap failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_narrow_font_character_bitmap", C.eb_narrow_font_character_bitmap(bc.book, C.int(codepoint), &bitmap[0])); err != nil {
+			return nil, err
 		}
 	}
 
@@ -426,8 +434,8 @@ func (bc *bookContext) blitGaiji(codepoint, width, height int, font fontType) (i
 
 func (bc *bookContext) loadTitle() (string, error) {
 	var data [C.EB_MAX_TITLE_LENGTH + 1]C.char
-	if errEb := C.eb_subbook_title(bc.book, &data[0]); errEb != C.EB_SUCCESS {
-		return "", fmt.Errorf("eb_subbook_title failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_subbook_title", C.eb_subbook_title(bc.book, &data[0])); err != nil {
+		return "", err
 	}
 
 	return bc.decoder.String(C.GoString(&data[0]))
@@ -439,8 +447,8 @@ func (bc *bookContext) loadCopyright() (string, error) {
 	}
 
 	var position C.EB_Position
-	if errEb := C.eb_copyright(bc.book, &position); errEb != C.EB_SUCCESS {
-		return "", fmt.Errorf("eb_copyright failed with code: %s", formatError(errEb))
+	if err := wrapEbError("eb_copyright", C.eb_copyright(bc.book, &position)); err != nil {
+		return "", err
 	}
 
 	return bc.loadContent(position, blockTypeText)
@@ -454,18 +462,18 @@ func (bc *bookContext) loadContent(position C.EB_Position, blockType blockType) 
 			dataUsed C.ssize_t
 		)
 
-		if errEb := C.eb_seek_text(bc.book, &position); errEb != C.EB_SUCCESS {
-			return "", fmt.Errorf("eb_seek_text failed with code: %s", formatError(errEb))
+		if err := wrapEbError("eb_seek_text", C.eb_seek_text(bc.book, &position)); err != nil {
+			return "", err
 		}
 
 		switch blockType {
 		case blockTypeHeading:
-			if errEb := C.eb_read_heading(bc.book, nil, bc.hookset, nil, dataSize, data, &dataUsed); errEb != C.EB_SUCCESS {
-				return "", fmt.Errorf("eb_read_heading failed with code: %s", formatError(errEb))
+			if err := wrapEbError("eb_read_heading", C.eb_read_heading(bc.book, nil, bc.hookset, nil, dataSize, data, &dataUsed)); err != nil {
+				return "", err
 			}
 		case blockTypeText:
-			if errEb := C.eb_read_text(bc.book, nil, bc.hookset, nil, dataSize, data, &dataUsed); errEb != C.EB_SUCCESS {
-				return "", fmt.Errorf("eb_read_text failed with code: %s", formatError(errEb))
+			if err := wrapEbError("eb_read_text", C.eb_read_text(bc.book, nil, bc.hookset, nil, dataSize, data, &dataUsed)); err != nil {
+				return "", err
 			}
 		}
 
