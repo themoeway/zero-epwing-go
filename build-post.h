@@ -98,7 +98,6 @@
 #define EB_SEARCH_KEYWORD   3
 #define EB_SEARCH_MULTI     4
 #define EB_SEARCH_CROSS     5
-#define EB_SEARCH_ALL       6
 #define EB_SEARCH_NONE      -1
 
 /*

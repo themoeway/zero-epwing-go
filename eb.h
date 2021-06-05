@@ -136,10 +136,4 @@ void eb_unset_subbook(EB_Book *book);
 int eb_have_word_search(EB_Book *book);
 EB_Error_Code eb_search_word(EB_Book *book, const char *input_word);
 
-/* all.c */
-int eb_have_all_search(EB_Book *book);
-EB_Error_Code eb_search_all_alphabet(EB_Book* book);
-EB_Error_Code eb_search_all_kana(EB_Book* book);
-EB_Error_Code eb_search_all_asis(EB_Book* book);
-
 #endif /* not EB_EB_H */
