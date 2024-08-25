@@ -277,8 +277,6 @@ eb_read_text(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
     const EB_Hook *hook;
     EB_Position position;
 
-    if (appendix != NULL)
-    if (hookset != NULL)
     LOG(("in: eb_read_text(book=%d, appendix=%d, text_max_length=%ld)",
     (int)book->code, (appendix != NULL) ? (int)appendix->code : 0,
     (long)text_max_length));
@@ -343,8 +341,6 @@ eb_read_text(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
 
     LOG(("out: eb_read_text(text_length=%ld) = %s", (long)*text_length,
     eb_error_string(EB_SUCCESS)));
-    if (hookset != &eb_default_hookset)
-    if (appendix != NULL)
     return EB_SUCCESS;
 
     /*
@@ -353,8 +349,6 @@ eb_read_text(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
   failed:
     eb_invalidate_text_context(book);
     LOG(("out: eb_read_text() = %s", eb_error_string(error_code)));
-    if (hookset != &eb_default_hookset)
-    if (appendix != NULL)
     return error_code;
 }
 
@@ -369,8 +363,6 @@ eb_read_heading(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
     EB_Error_Code error_code;
     const EB_Hook *hook;
 
-    if (appendix != NULL)
-    if (hookset != NULL)
     LOG(("in: eb_read_heading(book=%d, appendix=%d, text_max_length=%ld)",
     (int)book->code, (appendix != NULL) ? (int)appendix->code : 0,
     (long)text_max_length));
@@ -422,8 +414,6 @@ eb_read_heading(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
 
     LOG(("out: eb_read_heading(text_length=%ld) = %s", (long)*text_length,
     eb_error_string(EB_SUCCESS)));
-    if (hookset != &eb_default_hookset)
-    if (appendix != NULL)
     return EB_SUCCESS;
 
     /*
@@ -432,8 +422,6 @@ eb_read_heading(EB_Book *book, EB_Appendix *appendix, EB_Hookset *hookset,
   failed:
     eb_invalidate_text_context(book);
     LOG(("out: eb_read_heading() = %s", eb_error_string(error_code)));
-    if (hookset != &eb_default_hookset)
-    if (appendix != NULL)
     return error_code;
 }
 
